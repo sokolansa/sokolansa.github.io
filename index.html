@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Snake Game - Spiludvikling - HTML, Javascript, CSS</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="timer">Time: 00:00</div>
+
+  <div id="gameOverScreen">
+    <h2>Game Over</h2>
+    <p id="finalScore"></p>
+    <p id="finalTime"></p>
+    <p id="finalSpeed"></p>
+    <button id="returnButton" onclick="returnToTitle()">Back to Title Screen</button>
+  </div>
+
+  <div id="pauseOverlay">Paused</div>
+
+  <canvas id="game" width="400" height="400"></canvas>
+
+  <div id="gameStats">
+    <p id="scoreDisplay">Score: 0</p>
+    <p id="timescaleDisplay">Timescale: 1.0x</p>
+    <p id="speedDisplay">Current Speed: 300ms</p>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

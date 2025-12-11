@@ -124,14 +124,14 @@ document.getElementById('restartBtn').addEventListener('click', restartGame);
 // Upgrade Shop System
 function toggleUpgradeMenu() {
     const menu = document.getElementById('upgradeMenu');
-    menu.classList.toggle('hidden');
-    gameActive = menu.classList.contains('hidden');
+    menu.classList.toggle('visible');
+    gameActive = !menu.classList.contains('visible');
     updateUpgradeMenu();
 }
 
 function closeUpgradeMenu() {
     const menu = document.getElementById('upgradeMenu');
-    menu.classList.add('hidden');
+    menu.classList.remove('visible');
     gameActive = true;
 }
 

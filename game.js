@@ -79,6 +79,13 @@ let gameState = {
     hazards: [],
     lastFireballTime: Date.now(),
     lastGasTime: Date.now(),
+    // Bomb pods: active thrown bombs and their explosions
+    bombs: [],
+    explosions: [],
+    lastBombPodTime: Date.now(),
+    // Health pickups spawned by events
+    pickups: [],
+    lastHealthPodTime: Date.now(),
     totalEnemiesSpawned: 0
     ,
     projectileLifetimeBonus: 0
@@ -897,7 +904,7 @@ function updateDropPods(dt) {
         } else if (pod.state === 'impact') {
             pod.impactTimer += dt;
             if (!pod.spawned && pod.impactTimer >= 0.25) {
-                // spawn or create hazard depending on pod type
+                // spawn or create hazard/pickup depending on pod type
                 if (pod.type === 'fireball' || pod.type === 'gas') {
                     // create a hazard zone at the impact point
                     const isFire = pod.type === 'fireball';
@@ -912,6 +919,31 @@ function updateDropPods(dt) {
                         slowPercent: isFire ? 0 : 0.35
                     };
                     gameState.hazards.push(hazard);
+                } else if (pod.type === 'bombpod') {
+                    // spawn 4-7 small thrown bombs that land and explode
+                    const count = 4 + Math.floor(Math.random() * 4); // 4-7
+                    for (let b = 0; b < count; b++) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const speed = 140 + Math.random() * 160; // thrown speed
+                        const vx = Math.cos(angle) * speed;
+                        const vy = Math.sin(angle) * speed;
+                        const flight = 0.6 + Math.random() * 0.9; // seconds in air
+                        const bomb = {
+                            x: pod.x,
+                            y: pod.y,
+                            vx,
+                            vy,
+                            flightTime: flight,
+                            size: 6,
+                            exploded: false
+                        };
+                        gameState.bombs.push(bomb);
+                    }
+                } else if (pod.type === 'healthpod') {
+                    // health pod: spawn a player-only pickup (no enemies)
+                    const amount = 25 + Math.floor(gameState.level * 5);
+                    const pickup = { x: pod.x, y: pod.y, amount, timer: 0, duration: 12, size: 10 };
+                    gameState.pickups.push(pickup);
                 } else {
                     // spawn 4 of the same enemy type around pod.x/pod.y
                     for (let k = 0; k < 4; k++) {
@@ -980,6 +1012,96 @@ function updateHazards(dt) {
     }
 }
 
+// Update thrown bombs: move them through flightTime, explode on landing
+function updateBombs(dt) {
+    for (let i = gameState.bombs.length - 1; i >= 0; i--) {
+        const bomb = gameState.bombs[i];
+        if (bomb.flightTime > 0) {
+            // simple linear flight
+            bomb.x += bomb.vx * dt;
+            bomb.y += bomb.vy * dt;
+            // apply slight drag
+            bomb.vx *= Math.max(0, 1 - dt * 0.6);
+            bomb.vy *= Math.max(0, 1 - dt * 0.6);
+            bomb.flightTime -= dt;
+            if (bomb.flightTime <= 0) {
+                // land and explode
+                explodeBomb(bomb.x, bomb.y);
+                gameState.bombs.splice(i, 1);
+            }
+        } else {
+            // safety: explode if somehow remaining
+            explodeBomb(bomb.x, bomb.y);
+            gameState.bombs.splice(i, 1);
+        }
+    }
+}
+
+function explodeBomb(x, y) {
+    // Explosion parameters (medium damage)
+    const radius = 60 + gameState.level * 6;
+    const damage = 40 + gameState.level * 6;
+
+    // Damage enemies
+    for (let j = gameState.enemies.length - 1; j >= 0; j--) {
+        const en = gameState.enemies[j];
+        const dx = en.x - x;
+        const dy = en.y - y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= radius) {
+            en.health -= damage;
+            if (en.health <= 0) {
+                gameState.enemies.splice(j, 1);
+                gameState.gold += en.goldValue;
+                addXp(calculateEnemyXp(en));
+            }
+        }
+    }
+
+    // Damage player if close
+    const dxp = player.x - x;
+    const dyp = player.y - y;
+    const distp = Math.sqrt(dxp * dxp + dyp * dyp);
+    if (distp <= radius) {
+        player.health -= damage * 0.6;
+        if (player.health <= 0) endGame();
+    }
+
+    // Add visual explosion entry
+    gameState.explosions.push({ x, y, timer: 0, duration: 0.6, radius });
+}
+
+// Update visual explosions
+function updateExplosions(dt) {
+    for (let i = gameState.explosions.length - 1; i >= 0; i--) {
+        const ex = gameState.explosions[i];
+        ex.timer += dt;
+        if (ex.timer >= ex.duration) gameState.explosions.splice(i, 1);
+    }
+}
+
+// Update pickups: expire over time and detect player pickup
+function updatePickups(dt) {
+    for (let i = gameState.pickups.length - 1; i >= 0; i--) {
+        const p = gameState.pickups[i];
+        p.timer += dt;
+        // pickup collected by player
+        const dx = p.x - player.x;
+        const dy = p.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= p.size + player.size) {
+            player.health = Math.min(player.maxHealth, player.health + p.amount);
+            // remove pickup
+            gameState.pickups.splice(i, 1);
+            continue;
+        }
+        // expire
+        if (p.timer >= p.duration) {
+            gameState.pickups.splice(i, 1);
+        }
+    }
+}
+
 // Trigger a drop pod event: choose a spot and enemy type, add pod to gameState.dropPods
 function triggerDropPodEvent() {
     // Choose a position a bit away from player
@@ -1036,6 +1158,42 @@ function triggerGasEvent() {
         fallSpeed: 650 + Math.random() * 250,
         state: 'falling',
         type: 'gas',
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
+}
+
+// Global helper: trigger a bomb pod event (callable from console)
+function triggerBombPodEvent() {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 200;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+    const pod = {
+        x, y,
+        fallHeight: 600,
+        fallSpeed: 700 + Math.random() * 200,
+        state: 'falling',
+        type: 'bombpod',
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
+}
+
+// Global helper: trigger a health pod event (callable from console)
+function triggerHealthPodEvent() {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 200;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+    const pod = {
+        x, y,
+        fallHeight: 600,
+        fallSpeed: 700 + Math.random() * 200,
+        state: 'falling',
+        type: 'healthpod',
         spawned: false,
         impactTimer: 0
     };
@@ -1603,6 +1761,58 @@ function render() {
         }
     });
     
+    // Draw bombs in flight
+    gameState.bombs.forEach(bomb => {
+        ctx.save();
+        ctx.fillStyle = '#222222';
+        ctx.beginPath();
+        ctx.arc(bomb.x, bomb.y, bomb.size, 0, Math.PI * 2);
+        ctx.fill();
+        // little glow/fuse
+        ctx.strokeStyle = 'rgba(255,150,50,0.9)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(bomb.x, bomb.y, bomb.size + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    });
+
+    // Draw short-lived explosions
+    gameState.explosions.forEach(ex => {
+        const t = Math.min(1, ex.timer / ex.duration);
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(255,120,40,${1 - t})`;
+        ctx.lineWidth = 6 * (1 - t) + 1;
+        ctx.arc(ex.x, ex.y, ex.radius * t, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(255,200,120,${0.6 * (1 - t)})`;
+        ctx.arc(ex.x, ex.y, Math.max(6, ex.radius * 0.12 * (1 - t)), 0, Math.PI * 2);
+        ctx.fill();
+    });
+    
+    // Draw pickups (health)
+    gameState.pickups.forEach(p => {
+        const fade = Math.max(0, 1 - p.timer / p.duration);
+        // heart background
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(255,60,60,${0.9 * fade})`;
+        ctx.arc(p.x - 4, p.y - 2, p.size * 0.6, 0, Math.PI * 2);
+        ctx.arc(p.x + 4, p.y - 2, p.size * 0.6, 0, Math.PI * 2);
+        ctx.moveTo(p.x - 8, p.y + 2);
+        ctx.quadraticCurveTo(p.x, p.y + 14, p.x + 8, p.y + 2);
+        ctx.fill();
+        // white plus for clarity
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(255,255,255,${fade})`;
+        ctx.lineWidth = 2;
+        ctx.moveTo(p.x, p.y - 6);
+        ctx.lineTo(p.x, p.y + 6);
+        ctx.moveTo(p.x - 6, p.y);
+        ctx.lineTo(p.x + 6, p.y);
+        ctx.stroke();
+    });
+    
     ctx.restore();
 }
 
@@ -1783,6 +1993,9 @@ function gameLoop() {
         updateEnemies(dt);
         updateDropPods(dt);
         updateHazards(dt);
+        updateBombs(dt);
+        updateExplosions(dt);
+        updatePickups(dt);
         
         // Continuous enemy spawning
         const spawnRate = BASE_SPAWN_RATE + gameState.level * 0.04;
@@ -1801,6 +2014,38 @@ function gameLoop() {
             } else {
                 // still reset timer to avoid many checks
                 gameState.lastDropPodTime = now;
+            }
+        }
+        // Bomb pod event (falls and spawns thrown bombs)
+        const bombCooldown = 20000; // ms
+        if (now - gameState.lastBombPodTime > bombCooldown) {
+            if (Math.random() < 0.08) {
+                // schedule a bomb pod
+                const angle = Math.random() * Math.PI * 2;
+                const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 200;
+                const x = player.x + Math.cos(angle) * distance;
+                const y = player.y + Math.sin(angle) * distance;
+                const pod = { x, y, fallHeight: 600, fallSpeed: 700 + Math.random() * 200, state: 'falling', type: 'bombpod', spawned: false, impactTimer: 0 };
+                gameState.dropPods.push(pod);
+                gameState.lastBombPodTime = now;
+            } else {
+                gameState.lastBombPodTime = now;
+            }
+        }
+        // Health pod event (falls and spawns a health pickup on impact)
+        const healthCooldown = 22000; // ms
+        if (now - gameState.lastHealthPodTime > healthCooldown) {
+            if (Math.random() < 0.08) {
+                // schedule a health pod
+                const angle = Math.random() * Math.PI * 2;
+                const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 200;
+                const x = player.x + Math.cos(angle) * distance;
+                const y = player.y + Math.sin(angle) * distance;
+                const pod = { x, y, fallHeight: 600, fallSpeed: 700 + Math.random() * 200, state: 'falling', type: 'healthpod', spawned: false, impactTimer: 0 };
+                gameState.dropPods.push(pod);
+                gameState.lastHealthPodTime = now;
+            } else {
+                gameState.lastHealthPodTime = now;
             }
         }
         // Fireball event (falls and creates a burning zone)

@@ -41,6 +41,12 @@ const player = {
     slowZoneRadius: 0,
     slowZonePercent: 0,
     
+    // Earthquake ability
+    earthquakeRange: 0,
+    earthquakeCooldown: 0,
+    earthquakeStrength: 0,
+    lastEarthquakeTime: 0,
+    
     // Shooting
     lastShootTime: 0,
     shootCooldown: 1 / 1.0
@@ -69,6 +75,9 @@ let gameState = {
     totalEnemiesSpawned: 0
     ,
     projectileLifetimeBonus: 0
+    ,
+    // Enemy priority order (highest priority first)
+    enemyPriority: ['assassin','sniper','tank','normal','fastSmall','immuneSlow']
 };
 
 // Input Handling
@@ -142,6 +151,9 @@ function updateUpgradeMenu() {
     document.getElementById('upgradeDamage').textContent = player.damage;
     document.getElementById('upgradeMaxHealth').textContent = player.maxHealth;
     document.getElementById('upgradeProjectileSize').textContent = player.projectileSize;
+    document.getElementById('upgradeEarthquakeRange').textContent = Math.round(player.earthquakeRange);
+    document.getElementById('upgradeEarthquakeCooldown').textContent = player.earthquakeCooldown.toFixed(1);
+    document.getElementById('upgradeEarthquakeStrength').textContent = Math.round(player.earthquakeStrength);
     // Weapon system removed; this menu shows passive upgrade values only
 }
 
@@ -150,7 +162,10 @@ const upgradeCosts = {
     projectileSpeed: 50,
     damage: 60,
     maxHealth: 80,
-    projectileSize: 45
+    projectileSize: 45,
+    earthquakeRange: 70,
+    earthquakeCooldown: 75,
+    earthquakeStrength: 55
 };
 
 const upgradeValues = {
@@ -158,7 +173,10 @@ const upgradeValues = {
     projectileSpeed: 50,
     damage: 5,
     maxHealth: 30,
-    projectileSize: 1
+    projectileSize: 1,
+    earthquakeRange: 100,
+    earthquakeCooldown: 0.5,
+    earthquakeStrength: 20
 };
 
 function purchaseUpgrade(upgradeType) {
@@ -188,6 +206,15 @@ function purchaseUpgrade(upgradeType) {
             break;
         case 'projectileSize':
             player.projectileSize += upgradeValues.projectileSize;
+            break;
+        case 'earthquakeRange':
+            player.earthquakeRange += upgradeValues.earthquakeRange;
+            break;
+        case 'earthquakeCooldown':
+            player.earthquakeCooldown = Math.max(0.5, player.earthquakeCooldown - upgradeValues.earthquakeCooldown);
+            break;
+        case 'earthquakeStrength':
+            player.earthquakeStrength += upgradeValues.earthquakeStrength;
             break;
     }
     
@@ -246,34 +273,69 @@ function shoot(dirX, dirY) {
     }
 }
 
-function autoAim() {
-    if (gameState.enemies.length === 0) return null;
+function triggerEarthquake() {
+    const now = Date.now();
+    if (player.earthquakeRange === 0) return; // No earthquake ability yet
+    if (now - player.lastEarthquakeTime < player.earthquakeCooldown * 1000) return;
     
-    // Find nearest enemy
-    let nearestEnemy = null;
-    let nearestDistance = Infinity;
+    player.lastEarthquakeTime = now;
     
+    // Damage all enemies in range
     gameState.enemies.forEach(enemy => {
         const dx = enemy.x - player.x;
         const dy = enemy.y - player.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
+        if (distance <= player.earthquakeRange) {
+            enemy.health -= player.earthquakeStrength;
+        }
+    });
+}
+
+function autoAim() {
+    if (gameState.enemies.length === 0) return null;
+    // Respect player's priority list: try to find nearest enemy of highest-priority type
+    const priorityList = gameState.enemyPriority || [];
+    for (const type of priorityList) {
+        let nearestEnemy = null;
+        let nearestDistance = Infinity;
+        for (const enemy of gameState.enemies) {
+            if (enemy.type !== type) continue;
+            const dx = enemy.x - player.x;
+            const dy = enemy.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestEnemy = enemy;
+            }
+        }
+        if (nearestEnemy) {
+            const dx = nearestEnemy.x - player.x;
+            const dy = nearestEnemy.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance > 0) return { x: dx / distance, y: dy / distance, target: nearestEnemy };
+        }
+    }
+
+    // Fallback: nearest enemy of any type
+    let nearestEnemy = null;
+    let nearestDistance = Infinity;
+    for (const enemy of gameState.enemies) {
+        const dx = enemy.x - player.x;
+        const dy = enemy.y - player.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
         if (distance < nearestDistance) {
             nearestDistance = distance;
             nearestEnemy = enemy;
         }
-    });
-    
+    }
     if (nearestEnemy) {
         const dx = nearestEnemy.x - player.x;
         const dy = nearestEnemy.y - player.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance > 0) {
-            return { x: dx / distance, y: dy / distance, target: nearestEnemy };
-        }
+        if (distance > 0) return { x: dx / distance, y: dy / distance, target: nearestEnemy };
     }
-    
+
     return null;
 }
 
@@ -335,8 +397,7 @@ function updateProjectiles(dt) {
                     if (enemy.health <= 0) {
                         gameState.enemies.splice(j, 1);
                         gameState.gold += enemy.goldValue;
-                        const xpGain = 5 + gameState.level;
-                        addXp(xpGain);
+                        addXp((xpRewards[enemy.type] || 5) + gameState.level);
                     }
                     
                     // Remove projectile if out of pierces
@@ -455,6 +516,16 @@ function createEnemyAtRandomSpot() {
     };
 }
 
+// XP rewards per enemy type (base values)
+const xpRewards = {
+    normal: 5,
+    fastSmall: 4,
+    immuneSlow: 6,
+    tank: 20,
+    assassin: 30,
+    sniper: 18
+};
+
 function updateEnemies(dt) {
     for (let i = gameState.enemies.length - 1; i >= 0; i--) {
         const enemy = gameState.enemies[i];
@@ -545,7 +616,7 @@ function updateEnemies(dt) {
                         if (other.health <= 0) {
                             gameState.enemies.splice(k, 1);
                             gameState.gold += other.goldValue;
-                            addXp(5 + gameState.level);
+                            addXp((xpRewards[other.type] || 5) + gameState.level);
                         }
                     }
                 }
@@ -754,6 +825,119 @@ function updateUI() {
     document.getElementById('damage').textContent = player.damage;
 }
 
+// Priority UI: render and reorder functions
+function renderPriorityUI() {
+    // Populate the dropdown menu and update the summary text
+    const menu = document.getElementById('priorityDropdown');
+    const summary = document.getElementById('prioritySummary');
+    if (!menu || !summary) return;
+    menu.innerHTML = '';
+
+    const list = gameState.enemyPriority || [];
+    // Update summary (show full ordered list joined by >)
+    summary.textContent = list.join(' > ');
+
+    list.forEach((type, idx) => {
+        const item = document.createElement('div');
+        item.className = 'priority-item';
+        item.dataset.type = type;
+        item.dataset.index = String(idx);
+
+        const left = document.createElement('div');
+        left.textContent = `${idx + 1}. ${type}`;
+
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = '(Left: higher • Right: lower)';
+
+        item.appendChild(left);
+        item.appendChild(hint);
+
+        // Left click -> increase priority (move up)
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const i = Number(item.dataset.index);
+            if (!isNaN(i)) {
+                if (i > 0) movePriorityUp(i);
+                // keep dropdown open and refresh
+                renderPriorityUI();
+            }
+        });
+
+        // Right click -> decrease priority (move down)
+        item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const i = Number(item.dataset.index);
+            if (!isNaN(i)) {
+                if (i < list.length - 1) movePriorityDown(i);
+                renderPriorityUI();
+            }
+        });
+
+        menu.appendChild(item);
+    });
+}
+
+function movePriorityUp(index) {
+    if (!gameState.enemyPriority) return;
+    if (index <= 0) return;
+    const arr = gameState.enemyPriority;
+    const tmp = arr[index - 1];
+    arr[index - 1] = arr[index];
+    arr[index] = tmp;
+    renderPriorityUI();
+}
+
+function movePriorityDown(index) {
+    if (!gameState.enemyPriority) return;
+    if (index >= gameState.enemyPriority.length - 1) return;
+    const arr = gameState.enemyPriority;
+    const tmp = arr[index + 1];
+    arr[index + 1] = arr[index];
+    arr[index] = tmp;
+    renderPriorityUI();
+}
+
+// Initialize priority UI: attach toggle handlers and render
+function initPriorityUI() {
+    const toggle = document.getElementById('priorityToggle');
+    const menu = document.getElementById('priorityDropdown');
+    const panel = document.getElementById('priorityPanel');
+    if (!toggle || !menu || !panel) return;
+
+    // Toggle open/close
+    function openMenu() {
+        menu.classList.remove('hidden');
+        toggle.setAttribute('aria-expanded', 'true');
+        // Add outside click listener
+        setTimeout(() => {
+            document.addEventListener('click', outsideClick);
+        }, 0);
+    }
+    function closeMenu() {
+        menu.classList.add('hidden');
+        toggle.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('click', outsideClick);
+    }
+    function toggleMenu(e) {
+        e.stopPropagation();
+        if (menu.classList.contains('hidden')) openMenu(); else closeMenu();
+    }
+    function outsideClick(e) {
+        if (!panel.contains(e.target)) closeMenu();
+    }
+
+    toggle.addEventListener('click', toggleMenu);
+    // ESC to close
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeMenu();
+    });
+
+    renderPriorityUI();
+}
+
+setTimeout(initPriorityUI, 200);
+
 // Rendering
 function render() {
     // Clear canvas
@@ -770,6 +954,20 @@ function render() {
     
     // Draw infinite grid background
     drawBackground(cameraX, cameraY);
+
+    // Draw earthquake range indicator (if any)
+    if (player.earthquakeRange > 0) {
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(255,100,0,0.08)';
+        ctx.arc(player.x, player.y, player.earthquakeRange, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255,100,0,0.2)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.earthquakeRange, 0, Math.PI * 2);
+        ctx.stroke();
+    }
 
     // Draw slow zone indicator (if any)
     if (player.slowZoneRadius > 0) {
@@ -1026,27 +1224,7 @@ function renderHUD() {
         ctx.fillText(`STATUS: NO TARGET`, padding + 15, y);
     }
     
-    // Bottom Right - Performance Graph (simplified)
-    const brX = canvas.width - padding - 280;
-    const brWidth = 280;
-    const brHeight = gameState.currentTarget ? 90 : 60;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.fillRect(brX, canvas.height - padding - brHeight, brWidth, brHeight);
-    ctx.strokeStyle = '#ffa500';
-    ctx.strokeRect(brX, canvas.height - padding - brHeight, brWidth, brHeight);
-    
-    ctx.fillStyle = '#ffa500';
-    y = canvas.height - padding - brHeight + 15;
-    
-    ctx.font = `bold 14px 'Courier New', monospace`;
-    ctx.textAlign = 'right';
-    ctx.fillText('┌─ DEBUG INFO ─┐', brX + brWidth - 10, y);
-    y += lineHeight + 3;
-    
-    ctx.font = `${fontSize}px 'Courier New', monospace`;
-    ctx.fillText(`DT: ${(performance.now() % 1000).toFixed(2)}ms`, brX + brWidth - 15, y);
-    y += lineHeight;
-    ctx.fillText(`SPAWNED: ${gameState.totalEnemiesSpawned}`, brX + brWidth - 15, y);
+    // Bottom Right debug box removed
     
     // Draw crosshair in center
     const centerX = canvas.width / 2;
@@ -1083,6 +1261,7 @@ function gameLoop() {
     if (gameActive && !gameOver) {
         updatePlayer(dt);
         autoShoot();
+        triggerEarthquake();
         updateProjectiles(dt);
         updateEnemies(dt);
         

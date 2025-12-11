@@ -45,6 +45,14 @@ canvas {
     pointer-events: auto;
 }
 
+.bottom-right {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    pointer-events: auto;
+    z-index: 3000; /* ensure above canvas and most overlays */
+}
+
 .bottom-left {
     position: absolute;
     bottom: 20px;
@@ -477,6 +485,66 @@ canvas {
     box-shadow: 0 0 25px rgba(212, 175, 55, 0.6);
     transform: scale(1.05);
 }
+
+/* Priority Panel */
+.priority-panel {
+/* Priority dropdown (toggle + menu) */
+.priority-dropdown {
+    position: relative;
+    margin-top: 12px;
+}
+
+.priority-toggle {
+    background: linear-gradient(135deg, #333333, #1a1a1a);
+    color: #ffd700;
+    border: 2px solid rgba(255,215,0,0.15);
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: bold;
+    pointer-events: auto;
+}
+
+.priority-toggle:hover {
+    box-shadow: 0 0 10px rgba(255,215,0,0.08);
+}
+
+.priority-dropdown-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    min-width: 220px;
+    background: rgba(10,10,10,0.95);
+    border: 2px solid rgba(255,215,0,0.12);
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+    z-index: 3001; /* above other overlays */
+}
+
+.priority-toggle { z-index: 3002; }
+
+.priority-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 14px;
+}
+
+.priority-item:hover {
+    background: rgba(255,255,255,0.03);
+}
+
+.priority-item .hint {
+    color: #999;
+    font-size: 12px;
+    margin-left: 8px;
+}
+
+.hidden { display: none !important; }
 
 /* Scrollbar styling for upgrade menu */
 .upgrade-content::-webkit-scrollbar {

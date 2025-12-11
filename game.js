@@ -72,12 +72,22 @@ let gameState = {
     currentXp: 0,
     maxXp: 50,
     lastSpawnTime: 0,
+    // Drop pod events
+    dropPods: [],
+    lastDropPodTime: Date.now(),
+    // Hazard zones created by events (fire, gas)
+    hazards: [],
+    lastFireballTime: Date.now(),
+    lastGasTime: Date.now(),
     totalEnemiesSpawned: 0
     ,
     projectileLifetimeBonus: 0
     ,
     // Enemy priority order (highest priority first)
-    enemyPriority: ['assassin','sniper','tank','normal','fastSmall','immuneSlow']
+    enemyPriority: ['assassin','sniper','tank','random','blackhole','normal','fastSmall','immuneSlow']
+    ,
+    // Whether to use priority targeting
+    usePriority: true
 };
 
 // Input Handling
@@ -295,8 +305,9 @@ function triggerEarthquake() {
 function autoAim() {
     if (gameState.enemies.length === 0) return null;
     // Respect player's priority list: try to find nearest enemy of highest-priority type
-    const priorityList = gameState.enemyPriority || [];
-    for (const type of priorityList) {
+    if (gameState.usePriority) {
+        const priorityList = gameState.enemyPriority || [];
+        for (const type of priorityList) {
         let nearestEnemy = null;
         let nearestDistance = Infinity;
         for (const enemy of gameState.enemies) {
@@ -314,6 +325,7 @@ function autoAim() {
             const dy = nearestEnemy.y - player.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
             if (distance > 0) return { x: dx / distance, y: dy / distance, target: nearestEnemy };
+        }
         }
     }
 
@@ -397,7 +409,7 @@ function updateProjectiles(dt) {
                     if (enemy.health <= 0) {
                         gameState.enemies.splice(j, 1);
                         gameState.gold += enemy.goldValue;
-                        addXp((xpRewards[enemy.type] || 5) + gameState.level);
+                        addXp(calculateEnemyXp(enemy));
                     }
                     
                     // Remove projectile if out of pierces
@@ -444,8 +456,10 @@ function createEnemyAtRandomSpot() {
     if (r < 0.55) type = 'normal';
     else if (r < 0.70) type = 'fastSmall';
     else if (r < 0.82) type = 'immuneSlow';
-    else if (r < 0.92) type = 'tank';
-    else if (r < 0.97) type = 'assassin';
+    else if (r < 0.90) type = 'tank';
+    else if (r < 0.95) type = 'random';
+    else if (r < 0.97) type = 'blackhole';
+    else if (r < 0.99) type = 'assassin';
     else type = 'sniper';
 
     // Base stats
@@ -455,6 +469,76 @@ function createEnemyAtRandomSpot() {
     let damage = 8 + gameState.level;
     let goldValue = 20 + gameState.level * 3;
     let immuneToSlow = false;
+    let pullStrength = 0; // used by blackhole
+
+    // Helper to produce a stat template for a given type (uses current level)
+    function getTemplate(t) {
+        switch (t) {
+            case 'normal':
+                return {
+                    size: 12,
+                    health: Math.floor(20 + gameState.level * 3),
+                    speed: Math.floor(50 + gameState.level * 4),
+                    damage: Math.floor(8 + gameState.level),
+                    goldValue: Math.floor(20 + gameState.level * 3),
+                    immuneToSlow: false
+                };
+            case 'immuneSlow':
+                return {
+                    size: 14,
+                    health: Math.floor(30 + gameState.level * 4),
+                    speed: Math.floor(55 + gameState.level * 3),
+                    damage: Math.floor(10 + gameState.level * 1.2),
+                    goldValue: Math.floor(25 + gameState.level * 4),
+                    immuneToSlow: true
+                };
+            case 'tank':
+                return {
+                    size: 22,
+                    health: Math.floor(80 + gameState.level * 12),
+                    speed: Math.floor(18 + gameState.level * 1.2),
+                    damage: Math.floor(20 + gameState.level * 2),
+                    goldValue: Math.floor(60 + gameState.level * 8),
+                    immuneToSlow: false
+                };
+            case 'fastSmall':
+                return {
+                    size: 8,
+                    health: Math.floor(12 + gameState.level * 2),
+                    speed: Math.floor(120 + gameState.level * 6),
+                    damage: Math.floor(6 + gameState.level * 1),
+                    goldValue: Math.floor(12 + gameState.level * 2),
+                    immuneToSlow: false
+                };
+            case 'assassin':
+                return {
+                    size: 9,
+                    health: Math.floor(18 + gameState.level * 3),
+                    speed: Math.floor(220 + gameState.level * 10),
+                    damage: Math.floor(60 + gameState.level * 8),
+                    goldValue: Math.floor(80 + gameState.level * 12),
+                    immuneToSlow: false
+                };
+            case 'sniper':
+                return {
+                    size: 11,
+                    health: Math.floor(35 + gameState.level * 5),
+                    speed: Math.floor(45 + gameState.level * 2),
+                    damage: Math.floor(25 + gameState.level * 4),
+                    goldValue: Math.floor(50 + gameState.level * 6),
+                    immuneToSlow: false
+                };
+            default:
+                return {
+                    size: 12,
+                    health: Math.floor(20 + gameState.level * 3),
+                    speed: Math.floor(50 + gameState.level * 4),
+                    damage: Math.floor(8 + gameState.level),
+                    goldValue: Math.floor(20 + gameState.level * 3),
+                    immuneToSlow: false
+                };
+        }
+    }
 
     switch (type) {
         case 'normal':
@@ -496,6 +580,39 @@ function createEnemyAtRandomSpot() {
             damage = Math.floor(25 + gameState.level * 4); // single shot damage
             goldValue = Math.floor(50 + gameState.level * 6);
             break;
+        case 'blackhole':
+            // Black hole: stationary, large, pulls the player slowly
+            size = 28;
+            health = Math.floor(200 + gameState.level * 40);
+            speed = 0;
+            damage = 0;
+            goldValue = Math.floor(120 + gameState.level * 20);
+            immuneToSlow = true;
+            pullStrength = Math.floor(35 + gameState.level * 3);
+            break;
+        case 'random':
+            // Compose 2-3 random base types and average their stats to form a hybrid enemy
+            const choices = ['normal','fastSmall','immuneSlow','tank','assassin','sniper'];
+            const pickCount = 2 + Math.floor(Math.random() * 2); // 2 or 3
+            let sum = { size: 0, health: 0, speed: 0, damage: 0, goldValue: 0, immuneToSlow: 0 };
+            for (let k = 0; k < pickCount; k++) {
+                const t = choices[Math.floor(Math.random() * choices.length)];
+                const tpl = getTemplate(t);
+                sum.size += tpl.size;
+                sum.health += tpl.health;
+                sum.speed += tpl.speed;
+                sum.damage += tpl.damage;
+                sum.goldValue += tpl.goldValue;
+                sum.immuneToSlow += tpl.immuneToSlow ? 1 : 0;
+            }
+            // Average values
+            size = Math.max(6, Math.floor(sum.size / pickCount));
+            health = Math.max(8, Math.floor(sum.health / pickCount));
+            speed = Math.max(12, Math.floor(sum.speed / pickCount));
+            damage = Math.max(2, Math.floor(sum.damage / pickCount));
+            goldValue = Math.max(8, Math.floor(sum.goldValue / pickCount));
+            immuneToSlow = sum.immuneToSlow > 0;
+            break;
     }
 
     return {
@@ -510,9 +627,73 @@ function createEnemyAtRandomSpot() {
         goldValue,
         type,
         immuneToSlow,
+        pullStrength,
         // Sniper-specific: shooting cooldown
         lastShotTime: 0,
         shootCooldown: type === 'sniper' ? 2.5 : 0 // seconds between shots
+    };
+}
+
+// Create an enemy of the given `type` at coordinates x,y (used by drop pod spawns)
+function createEnemyOfType(type, x, y) {
+    // Use much of the same logic as createEnemyAtRandomSpot but with fixed type and position
+    // Base stats
+    let size = 12;
+    let health = 20 + gameState.level * 3;
+    let speed = 50 + gameState.level * 4;
+    let damage = 8 + gameState.level;
+    let goldValue = 20 + gameState.level * 3;
+    let immuneToSlow = false;
+    let pullStrength = 0;
+
+    function getTemplateLocal(t) {
+        switch (t) {
+            case 'normal':
+                return { size: 12, health: Math.floor(20 + gameState.level * 3), speed: Math.floor(50 + gameState.level * 4), damage: Math.floor(8 + gameState.level), goldValue: Math.floor(20 + gameState.level * 3), immuneToSlow: false };
+            case 'immuneSlow':
+                return { size: 14, health: Math.floor(30 + gameState.level * 4), speed: Math.floor(55 + gameState.level * 3), damage: Math.floor(10 + gameState.level * 1.2), goldValue: Math.floor(25 + gameState.level * 4), immuneToSlow: true };
+            case 'tank':
+                return { size: 22, health: Math.floor(80 + gameState.level * 12), speed: Math.floor(18 + gameState.level * 1.2), damage: Math.floor(20 + gameState.level * 2), goldValue: Math.floor(60 + gameState.level * 8), immuneToSlow: false };
+            case 'fastSmall':
+                return { size: 8, health: Math.floor(12 + gameState.level * 2), speed: Math.floor(120 + gameState.level * 6), damage: Math.floor(6 + gameState.level * 1), goldValue: Math.floor(12 + gameState.level * 2), immuneToSlow: false };
+            case 'assassin':
+                return { size: 9, health: Math.floor(18 + gameState.level * 3), speed: Math.floor(220 + gameState.level * 10), damage: Math.floor(60 + gameState.level * 8), goldValue: Math.floor(80 + gameState.level * 12), immuneToSlow: false };
+            case 'sniper':
+                return { size: 11, health: Math.floor(35 + gameState.level * 5), speed: Math.floor(45 + gameState.level * 2), damage: Math.floor(25 + gameState.level * 4), goldValue: Math.floor(50 + gameState.level * 6), immuneToSlow: false };
+            case 'random':
+                // fall back to normal for single-type creation
+                return { size: 12, health: Math.floor(20 + gameState.level * 3), speed: Math.floor(50 + gameState.level * 4), damage: Math.floor(8 + gameState.level), goldValue: Math.floor(20 + gameState.level * 3), immuneToSlow: false };
+            case 'blackhole':
+                return { size: 28, health: Math.floor(200 + gameState.level * 40), speed: 0, damage: 0, goldValue: Math.floor(120 + gameState.level * 20), immuneToSlow: true, pullStrength: Math.floor(35 + gameState.level * 3) };
+            default:
+                return { size: 12, health: Math.floor(20 + gameState.level * 3), speed: Math.floor(50 + gameState.level * 4), damage: Math.floor(8 + gameState.level), goldValue: Math.floor(20 + gameState.level * 3), immuneToSlow: false };
+        }
+    }
+
+    const tpl = getTemplateLocal(type || 'normal');
+    size = tpl.size;
+    health = tpl.health;
+    speed = tpl.speed;
+    damage = tpl.damage;
+    goldValue = tpl.goldValue;
+    immuneToSlow = tpl.immuneToSlow || false;
+    pullStrength = tpl.pullStrength || 0;
+
+    return {
+        x, y,
+        vx: 0,
+        vy: 0,
+        size,
+        health,
+        maxHealth: health,
+        speed,
+        damage,
+        goldValue,
+        type: type || 'normal',
+        immuneToSlow,
+        pullStrength,
+        lastShotTime: 0,
+        shootCooldown: type === 'sniper' ? 2.5 : 0
     };
 }
 
@@ -523,33 +704,97 @@ const xpRewards = {
     immuneSlow: 6,
     tank: 20,
     assassin: 30,
-    sniper: 18
+    sniper: 18,
+    random: 12,
+    blackhole: 40
 };
+
+// Calculate XP for an enemy based on its stats and rarity
+function calculateEnemyXp(enemy) {
+    if (!enemy) return 1;
+    const base = xpRewards[enemy.type] || 5;
+
+    // Factors based on enemy stats
+    const hpFactor = Math.max(0, Math.floor(enemy.maxHealth * 0.10));
+    const dmgFactor = Math.max(0, Math.floor(enemy.damage * 0.5));
+
+    // Rarity multiplier per type (tuned to feel reasonable)
+    const rarityMults = {
+        normal: 1.0,
+        fastSmall: 0.8,
+        immuneSlow: 1.1,
+        tank: 2.0,
+        assassin: 2.5,
+        sniper: 1.8,
+        random: 1.3,
+        blackhole: 3.0
+    };
+    const rarity = rarityMults[enemy.type] || 1.0;
+
+    // Combine into an XP value
+    let xp = Math.floor((hpFactor + dmgFactor) * rarity + base);
+
+    // Small scaling with level so XP grows slightly as player levels
+    xp += Math.floor(gameState.level * 0.5);
+
+    // Ensure at least 1 XP
+    return Math.max(1, xp);
+}
 
 function updateEnemies(dt) {
     for (let i = gameState.enemies.length - 1; i >= 0; i--) {
         const enemy = gameState.enemies[i];
-        
-        // Chase player
-        const dx = player.x - enemy.x;
-        const dy = player.y - enemy.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance > 0) {
-            const dirX = dx / distance;
-            const dirY = dy / distance;
-
-            // Apply slow zone effect if within radius (some enemies can be immune)
-            let speedMultiplier = 1;
-            if (player.slowZoneRadius > 0) {
-                const distToPlayer = Math.sqrt((enemy.x - player.x) ** 2 + (enemy.y - player.y) ** 2);
-                if (distToPlayer <= player.slowZoneRadius && !enemy.immuneToSlow) {
-                    speedMultiplier = Math.max(0, 1 - player.slowZonePercent);
-                }
+        // Blackhole: stationary, pulls player slowly toward it
+        if (enemy.type === 'blackhole') {
+            const dxp = enemy.x - player.x;
+            const dyp = enemy.y - player.y;
+            const distp = Math.sqrt(dxp * dxp + dyp * dyp);
+            if (distp > 0) {
+                // Pull strength scales with enemy.pullStrength and falls off with distance
+                const base = enemy.pullStrength || 30;
+                const pullFactor = (base / (distp + 20)) * dt; // tuned for gradual pull
+                player.x += dxp * pullFactor;
+                player.y += dyp * pullFactor;
             }
+            // Blackhole itself doesn't chase/move
+            enemy.vx = 0;
+            enemy.vy = 0;
+        } else {
+            // Chase player
+            const dx = player.x - enemy.x;
+            const dy = player.y - enemy.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
 
-            enemy.vx = dirX * enemy.speed * speedMultiplier;
-            enemy.vy = dirY * enemy.speed * speedMultiplier;
+            if (distance > 0) {
+                const dirX = dx / distance;
+                const dirY = dy / distance;
+
+                // Apply slow zone effect if within radius (some enemies can be immune)
+                let speedMultiplier = 1;
+                if (player.slowZoneRadius > 0) {
+                    const distToPlayer = Math.sqrt((enemy.x - player.x) ** 2 + (enemy.y - player.y) ** 2);
+                    if (distToPlayer <= player.slowZoneRadius && !enemy.immuneToSlow) {
+                        speedMultiplier = Math.max(0, 1 - player.slowZonePercent);
+                    }
+                }
+
+                // Apply gas hazard slow if inside any gas hazard
+                let gasSlow = 0;
+                for (const hz of gameState.hazards) {
+                    if (hz.type === 'gas') {
+                        const dxh = enemy.x - hz.x;
+                        const dyh = enemy.y - hz.y;
+                        const dh = Math.sqrt(dxh * dxh + dyh * dyh);
+                        if (dh <= hz.radius) gasSlow = Math.max(gasSlow, hz.slowPercent || 0);
+                    }
+                }
+                if (gasSlow > 0 && !enemy.immuneToSlow) {
+                    speedMultiplier *= Math.max(0, 1 - gasSlow);
+                }
+
+                enemy.vx = dirX * enemy.speed * speedMultiplier;
+                enemy.vy = dirY * enemy.speed * speedMultiplier;
+            }
         }
         
         enemy.x += enemy.vx * dt;
@@ -616,7 +861,7 @@ function updateEnemies(dt) {
                         if (other.health <= 0) {
                             gameState.enemies.splice(k, 1);
                             gameState.gold += other.goldValue;
-                            addXp((xpRewards[other.type] || 5) + gameState.level);
+                            addXp(calculateEnemyXp(other));
                         }
                     }
                 }
@@ -636,6 +881,165 @@ function updateEnemies(dt) {
             }
         }
     }
+}
+
+// Drop pod logic: update active pods (falling -> impact -> spawn)
+function updateDropPods(dt) {
+    for (let i = gameState.dropPods.length - 1; i >= 0; i--) {
+        const pod = gameState.dropPods[i];
+        if (pod.state === 'falling') {
+            pod.fallHeight -= pod.fallSpeed * dt;
+            if (pod.fallHeight <= 0) {
+                pod.state = 'impact';
+                pod.impactTimer = 0;
+                // spawn after a short delay to allow impact animation
+            }
+        } else if (pod.state === 'impact') {
+            pod.impactTimer += dt;
+            if (!pod.spawned && pod.impactTimer >= 0.25) {
+                // spawn or create hazard depending on pod type
+                if (pod.type === 'fireball' || pod.type === 'gas') {
+                    // create a hazard zone at the impact point
+                    const isFire = pod.type === 'fireball';
+                    const hazard = {
+                        x: pod.x,
+                        y: pod.y,
+                        type: isFire ? 'fire' : 'gas',
+                        radius: isFire ? 80 + gameState.level * 6 : 100 + gameState.level * 8,
+                        duration: isFire ? 5 + Math.random() * 3 : 6 + Math.random() * 4,
+                        timer: 0,
+                        damagePerSecond: isFire ? (18 + gameState.level * 2) : (8 + gameState.level * 1),
+                        slowPercent: isFire ? 0 : 0.35
+                    };
+                    gameState.hazards.push(hazard);
+                } else {
+                    // spawn 4 of the same enemy type around pod.x/pod.y
+                    for (let k = 0; k < 4; k++) {
+                        const angle = (Math.PI * 2) * (k / 4) + (Math.random() - 0.5) * 0.4;
+                        const dist = 20 + Math.random() * 30;
+                        const ex = pod.x + Math.cos(angle) * dist;
+                        const ey = pod.y + Math.sin(angle) * dist;
+                        // For 'random' type, create one hybrid using the random logic
+                        if (pod.type === 'random') {
+                            // reuse createEnemyAtRandomSpot behaviour: pick a composed random enemy
+                            const e = createEnemyAtRandomSpot();
+                            e.x = ex; e.y = ey;
+                            gameState.enemies.push(e);
+                        } else {
+                            const e = createEnemyOfType(pod.type, ex, ey);
+                            gameState.enemies.push(e);
+                        }
+                        gameState.totalEnemiesSpawned++;
+                    }
+                }
+                pod.spawned = true;
+            }
+
+            // remove pod after visual time
+            if (pod.impactTimer > 1.2) {
+                gameState.dropPods.splice(i, 1);
+            }
+        }
+    }
+}
+
+// Update hazard zones (fire/gas): apply damage over time and remove when expired
+function updateHazards(dt) {
+    for (let i = gameState.hazards.length - 1; i >= 0; i--) {
+        const h = gameState.hazards[i];
+        h.timer += dt;
+
+        // Damage enemies inside the hazard
+        for (let j = gameState.enemies.length - 1; j >= 0; j--) {
+            const en = gameState.enemies[j];
+            const dx = en.x - h.x;
+            const dy = en.y - h.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist <= h.radius) {
+                en.health -= h.damagePerSecond * dt;
+                if (en.health <= 0) {
+                    gameState.enemies.splice(j, 1);
+                    gameState.gold += en.goldValue;
+                    addXp(calculateEnemyXp(en));
+                }
+            }
+        }
+
+        // Damage player (smaller rate)
+        const dxp = player.x - h.x;
+        const dyp = player.y - h.y;
+        const distp = Math.sqrt(dxp * dxp + dyp * dyp);
+        if (distp <= h.radius) {
+            player.health -= (h.damagePerSecond * 0.5) * dt;
+            if (player.health <= 0) endGame();
+        }
+
+        if (h.timer >= h.duration) {
+            gameState.hazards.splice(i, 1);
+        }
+    }
+}
+
+// Trigger a drop pod event: choose a spot and enemy type, add pod to gameState.dropPods
+function triggerDropPodEvent() {
+    // Choose a position a bit away from player
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.7 + Math.random() * 200;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+
+    // Choose enemy type randomly from common types (exclude blackhole to avoid chaos)
+    const pool = ['normal','fastSmall','immuneSlow','tank','assassin','sniper','random'];
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+
+    const pod = {
+        x, y,
+        fallHeight: 600, // starts high above world
+        fallSpeed: 700 + Math.random() * 300,
+        state: 'falling',
+        type: chosen,
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
+}
+
+// Trigger a falling fireball event that creates a burning zone on impact
+function triggerFireballEvent() {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 300;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+
+    const pod = {
+        x, y,
+        fallHeight: 700,
+        fallSpeed: 900 + Math.random() * 300,
+        state: 'falling',
+        type: 'fireball',
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
+}
+
+// Trigger a falling gas canister event that creates a damaging/slowing gas cloud on impact
+function triggerGasEvent() {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 300;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+
+    const pod = {
+        x, y,
+        fallHeight: 700,
+        fallSpeed: 650 + Math.random() * 250,
+        state: 'falling',
+        type: 'gas',
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
 }
 
 function addXp(amount) {
@@ -837,6 +1241,25 @@ function renderPriorityUI() {
     // Update summary (show full ordered list joined by >)
     summary.textContent = list.join(' > ');
 
+    // Top control: enable/disable priorities
+    const control = document.createElement('div');
+    control.className = 'priority-item';
+    const ctlLeft = document.createElement('div');
+    ctlLeft.textContent = 'Use Priority';
+    const ctlRight = document.createElement('div');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !!gameState.usePriority;
+    checkbox.addEventListener('change', () => {
+        gameState.usePriority = checkbox.checked;
+        // update summary (no change) and close if needed
+        renderPriorityUI();
+    });
+    ctlRight.appendChild(checkbox);
+    control.appendChild(ctlLeft);
+    control.appendChild(ctlRight);
+    menu.appendChild(control);
+
     list.forEach((type, idx) => {
         const item = document.createElement('div');
         item.className = 'priority-item';
@@ -1032,58 +1455,152 @@ function render() {
     gameState.enemies.forEach(enemy => {
         // Color/enemy type visual mapping
         let color = '#ff3333';
-        switch (enemy.type) {
-            case 'immuneSlow': color = '#9b59b6'; break; // purple
-            case 'tank': color = '#8b0000'; break; // dark red
-            case 'fastSmall': color = '#ff8c00'; break; // orange
-            case 'assassin': color = '#ff00ff'; break; // magenta
-            default: color = '#ff3333';
+        if (enemy.type === 'random') {
+            // Rainbow color that cycles over time and space
+            const hue = Math.floor(((Date.now() / 20) + enemy.x + enemy.y) % 360);
+            color = `hsl(${hue}, 85%, 55%)`;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.size, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (enemy.type === 'blackhole') {
+            // Black hole visual: radial gradient fading outwards
+            const grad = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, enemy.size * 3);
+            grad.addColorStop(0, 'rgba(0,0,0,1)');
+            grad.addColorStop(0.6, 'rgba(20,20,20,0.9)');
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.size * 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            // central core
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.size, 0, Math.PI * 2);
+            ctx.fill();
+
+            // subtle ring
+            ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.size + 8, 0, Math.PI * 2);
+            ctx.stroke();
+        } else {
+            switch (enemy.type) {
+                case 'immuneSlow': color = '#9b59b6'; break; // purple
+                case 'tank': color = '#8b0000'; break; // dark red
+                case 'fastSmall': color = '#ff8c00'; break; // orange
+                case 'assassin': color = '#ff00ff'; break; // magenta
+                default: color = '#ff3333';
+            }
+
+            // Draw enemy body
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.size, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Assassin visual accent
+            if (enemy.type === 'assassin') {
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(enemy.x, enemy.y, enemy.size + 4, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // Sniper visual: crosshair
+            if (enemy.type === 'sniper') {
+                ctx.strokeStyle = '#00ff00';
+                ctx.lineWidth = 1;
+                const sightSize = enemy.size + 6;
+                ctx.beginPath();
+                ctx.moveTo(enemy.x - sightSize, enemy.y);
+                ctx.lineTo(enemy.x + sightSize, enemy.y);
+                ctx.moveTo(enemy.x, enemy.y - sightSize);
+                ctx.lineTo(enemy.x, enemy.y + sightSize);
+                ctx.stroke();
+                // Scope circle
+                ctx.beginPath();
+                ctx.arc(enemy.x, enemy.y, sightSize, 0, Math.PI * 2);
+                ctx.stroke();
+            }
         }
 
-        // Draw enemy body
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(enemy.x, enemy.y, enemy.size, 0, Math.PI * 2);
-        ctx.fill();
+        // Draw health bar (skip for blackhole to reduce clutter)
+        if (enemy.type !== 'blackhole') {
+            const barWidth = enemy.size * 2;
+            const barHeight = 4;
+            const barX = enemy.x - barWidth / 2;
+            const barY = enemy.y - enemy.size - 15;
 
-        // Assassin visual accent
-        if (enemy.type === 'assassin') {
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(enemy.x, enemy.y, enemy.size + 4, 0, Math.PI * 2);
-            ctx.stroke();
-        }
+            ctx.fillStyle = '#333333';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
 
-        // Sniper visual: crosshair
-        if (enemy.type === 'sniper') {
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 1;
-            const sightSize = enemy.size + 6;
-            ctx.beginPath();
-            ctx.moveTo(enemy.x - sightSize, enemy.y);
-            ctx.lineTo(enemy.x + sightSize, enemy.y);
-            ctx.moveTo(enemy.x, enemy.y - sightSize);
-            ctx.lineTo(enemy.x, enemy.y + sightSize);
-            ctx.stroke();
-            // Scope circle
-            ctx.beginPath();
-            ctx.arc(enemy.x, enemy.y, sightSize, 0, Math.PI * 2);
-            ctx.stroke();
+            const healthPercent = enemy.health / enemy.maxHealth;
+            ctx.fillStyle = healthPercent > 0.5 ? '#00ff00' : healthPercent > 0.25 ? '#ffff00' : '#ff3333';
+            ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
         }
-        
-        // Draw health bar
-        const barWidth = enemy.size * 2;
-        const barHeight = 4;
-        const barX = enemy.x - barWidth / 2;
-        const barY = enemy.y - enemy.size - 15;
-        
-        ctx.fillStyle = '#333333';
-        ctx.fillRect(barX, barY, barWidth, barHeight);
-        
-        const healthPercent = enemy.health / enemy.maxHealth;
-        ctx.fillStyle = healthPercent > 0.5 ? '#00ff00' : healthPercent > 0.25 ? '#ffff00' : '#ff3333';
-        ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
+    });
+    
+    // Draw active drop pods (falling and impact visuals)
+    gameState.dropPods.forEach(pod => {
+        if (pod.state === 'falling') {
+            // Draw pod as small rectangle descending from above
+            const drawY = pod.y - pod.fallHeight;
+            ctx.save();
+            ctx.fillStyle = '#cccccc';
+            ctx.beginPath();
+            ctx.rect(pod.x - 8, drawY - 12, 16, 16);
+            ctx.fill();
+            // subtle flame/contrail
+            ctx.strokeStyle = 'rgba(255,140,0,0.6)';
+            ctx.beginPath();
+            ctx.moveTo(pod.x, drawY + 8);
+            ctx.lineTo(pod.x, drawY + 24);
+            ctx.stroke();
+            ctx.restore();
+        } else if (pod.state === 'impact') {
+            // Impact ring
+            const t = Math.min(1, pod.impactTimer / 0.6);
+            const ringRadius = 10 + t * 120;
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(255,200,60,${1 - t})`;
+            ctx.lineWidth = 3 * (1 - t) + 1;
+            ctx.arc(pod.x, pod.y, ringRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            // small flash
+            ctx.fillStyle = `rgba(255,220,120,${0.6 - t * 0.6})`;
+            ctx.beginPath();
+            ctx.arc(pod.x, pod.y, 6 + t * 12, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+    
+    // Draw active hazards (fire and gas)
+    gameState.hazards.forEach(h => {
+        const progress = Math.min(1, h.timer / h.duration);
+        if (h.type === 'fire') {
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(255,100,20,${0.35 * (1 - progress)})`;
+            ctx.arc(h.x, h.y, h.radius, 0, Math.PI * 2);
+            ctx.fill();
+            // flicker core
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(255,180,60,${0.6 * (1 - progress)})`;
+            ctx.arc(h.x, h.y, Math.max(8, h.radius * 0.25), 0, Math.PI * 2);
+            ctx.fill();
+        } else if (h.type === 'gas') {
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(120,200,120,${0.22 * (1 - progress)})`;
+            ctx.arc(h.x, h.y, h.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(80,160,120,${0.14 * (1 - progress)})`;
+            ctx.arc(h.x, h.y, Math.max(10, h.radius * 0.2), 0, Math.PI * 2);
+            ctx.fill();
+        }
     });
     
     ctx.restore();
@@ -1264,6 +1781,8 @@ function gameLoop() {
         triggerEarthquake();
         updateProjectiles(dt);
         updateEnemies(dt);
+        updateDropPods(dt);
+        updateHazards(dt);
         
         // Continuous enemy spawning
         const spawnRate = BASE_SPAWN_RATE + gameState.level * 0.04;
@@ -1271,6 +1790,38 @@ function gameLoop() {
         if (now - gameState.lastSpawnTime > spawnInterval * 1000) {
             spawnContinuousEnemy();
             gameState.lastSpawnTime = now;
+        }
+        // Chance to spawn a drop pod event occasionally
+        const dropCooldown = 10000; // minimum ms between attempts
+        if (now - gameState.lastDropPodTime > dropCooldown) {
+            // Average roughly 1 drop every 20-40 seconds: chance ~0.03-0.05 per check
+            if (Math.random() < 0.12) {
+                triggerDropPodEvent();
+                gameState.lastDropPodTime = now;
+            } else {
+                // still reset timer to avoid many checks
+                gameState.lastDropPodTime = now;
+            }
+        }
+        // Fireball event (falls and creates a burning zone)
+        const fireCooldown = 15000;
+        if (now - gameState.lastFireballTime > fireCooldown) {
+            if (Math.random() < 0.06) {
+                triggerFireballEvent();
+                gameState.lastFireballTime = now;
+            } else {
+                gameState.lastFireballTime = now;
+            }
+        }
+        // Gas event (falls and creates a gas cloud)
+        const gasCooldown = 20000;
+        if (now - gameState.lastGasTime > gasCooldown) {
+            if (Math.random() < 0.05) {
+                triggerGasEvent();
+                gameState.lastGasTime = now;
+            } else {
+                gameState.lastGasTime = now;
+            }
         }
     }
     

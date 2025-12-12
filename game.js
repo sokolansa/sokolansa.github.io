@@ -86,6 +86,11 @@ let gameState = {
     // Health pickups spawned by events
     pickups: [],
     lastHealthPodTime: Date.now(),
+    // Allies (player's companions)
+    allies: [],
+    lastAllyPodTime: Date.now(),
+    // Upgrade pickup events
+    lastUpgradePodTime: Date.now(),
     totalEnemiesSpawned: 0
     ,
     projectileLifetimeBonus: 0
@@ -416,7 +421,12 @@ function updateProjectiles(dt) {
                     if (enemy.health <= 0) {
                         gameState.enemies.splice(j, 1);
                         gameState.gold += enemy.goldValue;
-                        addXp(calculateEnemyXp(enemy));
+                        const xpAmt = calculateEnemyXp(enemy);
+                        if (proj.isAllyProjectile && proj.allyRef) {
+                            addXpToAlly(proj.allyRef, xpAmt);
+                        } else {
+                            addXp(xpAmt);
+                        }
                     }
                     
                     // Remove projectile if out of pierces
@@ -716,6 +726,90 @@ const xpRewards = {
     blackhole: 40
 };
 
+// Create an ally (player companion) at x,y
+function createAllyAt(x, y) {
+    const size = 13;
+    const health = 80 + Math.floor(gameState.level * 12);
+    const speed = 140 + Math.floor(gameState.level * 6);
+    const damage = 8 + Math.floor(gameState.level * 2);
+    return {
+        x, y,
+        vx: 0,
+        vy: 0,
+        size,
+        health,
+        maxHealth: health,
+        speed,
+        damage,
+        projectileSpeed: 420,
+        projectileSize: 5,
+        shootCooldown: 1.2, // seconds
+        attackSpeed: 1.0,
+        piercing: 0,
+        multishot: 1,
+        lastShootTime: 0,
+        target: null
+    };
+}
+
+// Grant XP to an ally and handle leveling + random upgrade for ally
+function addXpToAlly(ally, amount) {
+    if (!ally) return;
+    ally.currentXp = ally.currentXp || 0;
+    ally.level = ally.level || 1;
+    ally.maxXp = ally.maxXp || 20;
+    ally.currentXp += amount;
+    while (ally.currentXp >= ally.maxXp) {
+        ally.currentXp -= ally.maxXp;
+        ally.level++;
+        ally.maxXp = Math.floor(20 * Math.pow(1.05, ally.level - 1));
+        // Apply a random upgrade to the ally on level up
+        const upgrade = levelUpUpgradesList[Math.floor(Math.random() * levelUpUpgradesList.length)];
+        applyUpgradeToAlly(upgrade, ally);
+        // small console feedback
+        console.log(`Ally leveled to ${ally.level}: ${upgrade ? upgrade.name : 'upgrade'}`);
+    }
+}
+
+function applyUpgradeToAlly(upgrade, ally) {
+    if (!upgrade || !ally) return;
+    switch (upgrade.stat) {
+        case 'maxHealth':
+            ally.maxHealth += upgrade.value;
+            ally.health = Math.min(ally.health + upgrade.value, ally.maxHealth);
+            break;
+        case 'damage':
+            ally.damage += upgrade.value;
+            break;
+        case 'attackSpeed':
+            ally.attackSpeed = (ally.attackSpeed || 1.0) + upgrade.value;
+            ally.shootCooldown = 1 / (ally.attackSpeed || 1.0);
+            break;
+        case 'projectileSpeed':
+            ally.projectileSpeed += upgrade.value;
+            break;
+        case 'projectileSize':
+            ally.projectileSize = (ally.projectileSize || 5) + upgrade.value;
+            break;
+        case 'piercing':
+            ally.piercing = (ally.piercing || 0) + upgrade.value;
+            break;
+        case 'multishot':
+            ally.multishot = (ally.multishot || 1) + upgrade.value;
+            break;
+        case 'slowZoneRange':
+            // not used for allies, give small speed boost instead
+            ally.speed += (upgrade.value || 30);
+            break;
+        case 'slowZonePercent':
+            // not used for allies, give small damage boost
+            ally.damage += Math.max(1, Math.floor((upgrade.value || 0.05) * 10));
+            break;
+    }
+    // Optional visual: show notification (uses same UI)
+    showUpgradeNotification(upgrade);
+}
+
 // Calculate XP for an enemy based on its stats and rarity
 function calculateEnemyXp(enemy) {
     if (!enemy) return 1;
@@ -890,6 +984,92 @@ function updateEnemies(dt) {
     }
 }
 
+// Update allies: follow player, target enemies and shoot; allies are friendly and are not affected by player's projectiles
+function updateAllies(dt) {
+    for (let i = gameState.allies.length - 1; i >= 0; i--) {
+        const ally = gameState.allies[i];
+
+        // Find nearest enemy
+        let nearest = null;
+        let nearestDist = Infinity;
+        for (let j = 0; j < gameState.enemies.length; j++) {
+            const en = gameState.enemies[j];
+            const dx = en.x - ally.x;
+            const dy = en.y - ally.y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearest = en;
+            }
+        }
+
+        const now = Date.now();
+
+        if (nearest && nearestDist < 900) {
+            // Move toward enemy but keep some distance
+            const dx = nearest.x - ally.x;
+            const dy = nearest.y - ally.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+            const dirX = dx / dist;
+            const dirY = dy / dist;
+
+            // Simple movement
+            ally.vx = dirX * ally.speed;
+            ally.vy = dirY * ally.speed;
+            ally.x += ally.vx * dt;
+            ally.y += ally.vy * dt;
+
+            // Shoot when in range
+            const attackRange = 360;
+            if (dist <= attackRange) {
+                if (now - ally.lastShootTime > ally.shootCooldown * 1000) {
+                    ally.lastShootTime = now;
+                    const projDirX = dirX;
+                    const projDirY = dirY;
+                    gameState.projectiles.push({
+                        x: ally.x,
+                        y: ally.y,
+                        vx: projDirX * ally.projectileSpeed,
+                        vy: projDirY * ally.projectileSpeed,
+                        size: ally.projectileSize,
+                        damage: ally.damage,
+                        lifetime: 6,
+                        pierceCount: 0,
+                        maxPierce: 0,
+                        hitEnemies: []
+                    });
+                }
+            }
+        } else {
+            // No target: follow player at comfortable distance
+            const dx = player.x - ally.x;
+            const dy = player.y - ally.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+            if (dist > 120) {
+                const dirX = dx / dist;
+                const dirY = dy / dist;
+                ally.vx = dirX * ally.speed;
+                ally.vy = dirY * ally.speed;
+                ally.x += ally.vx * dt;
+                ally.y += ally.vy * dt;
+            } else {
+                // idle slight drift
+                ally.vx *= 0.9;
+                ally.vy *= 0.9;
+                ally.x += ally.vx * dt;
+                ally.y += ally.vy * dt;
+            }
+        }
+
+        // Remove ally if too far from player
+        const distToPlayer = Math.sqrt((ally.x - player.x) ** 2 + (ally.y - player.y) ** 2);
+        if (distToPlayer > MAX_DISTANCE * 1.2) {
+            gameState.allies.splice(i, 1);
+            continue;
+        }
+    }
+}
+
 // Drop pod logic: update active pods (falling -> impact -> spawn)
 function updateDropPods(dt) {
     for (let i = gameState.dropPods.length - 1; i >= 0; i--) {
@@ -942,7 +1122,27 @@ function updateDropPods(dt) {
                 } else if (pod.type === 'healthpod') {
                     // health pod: spawn a player-only pickup (no enemies)
                     const amount = 25 + Math.floor(gameState.level * 5);
-                    const pickup = { x: pod.x, y: pod.y, amount, timer: 0, duration: 12, size: 10 };
+                    const pickup = { x: pod.x, y: pod.y, amount, timer: 0, duration: 12, size: 10, type: 'health' };
+                    gameState.pickups.push(pickup);
+                } else if (pod.type === 'allypod') {
+                    // ally pod: spawn a friendly ally that assists the player
+                    const ally = createAllyAt(pod.x, pod.y);
+                    gameState.allies.push(ally);
+                } else if (pod.type === 'upgradepod') {
+                    // upgrade pod: spawn a player-only upgrade pickup (no enemies)
+                    // choose a single upgrade to drop (show its name on pickup)
+                    const choices = generateRandomUpgrades();
+                    const chosen = choices.length > 0 ? choices[0] : levelUpUpgradesList[Math.floor(Math.random() * levelUpUpgradesList.length)];
+                    const pickup = {
+                        x: pod.x,
+                        y: pod.y,
+                        timer: 0,
+                        duration: 18,
+                        size: 12,
+                        type: 'upgrade',
+                        upgrade: chosen,
+                        label: chosen ? chosen.name : 'Upgrade'
+                    };
                     gameState.pickups.push(pickup);
                 } else {
                     // spawn 4 of the same enemy type around pod.x/pod.y
@@ -1090,7 +1290,12 @@ function updatePickups(dt) {
         const dy = p.y - player.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist <= p.size + player.size) {
-            player.health = Math.min(player.maxHealth, player.health + p.amount);
+            if (!p.type || p.type === 'health') {
+                player.health = Math.min(player.maxHealth, player.health + (p.amount || 0));
+            } else if (p.type === 'upgrade') {
+                // apply the contained upgrade to the player
+                if (p.upgrade) applyUpgrade(p.upgrade);
+            }
             // remove pickup
             gameState.pickups.splice(i, 1);
             continue;
@@ -1200,6 +1405,42 @@ function triggerHealthPodEvent() {
     gameState.dropPods.push(pod);
 }
 
+// Global helper: trigger an upgrade pod event (callable from console)
+function triggerUpgradePodEvent() {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 200;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+    const pod = {
+        x, y,
+        fallHeight: 600,
+        fallSpeed: 700 + Math.random() * 200,
+        state: 'falling',
+        type: 'upgradepod',
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
+}
+
+// Global helper: trigger an ally pod event (callable from console)
+function triggerAllyPodEvent() {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = SPAWN_DISTANCE * 0.6 + Math.random() * 200;
+    const x = player.x + Math.cos(angle) * distance;
+    const y = player.y + Math.sin(angle) * distance;
+    const pod = {
+        x, y,
+        fallHeight: 600,
+        fallSpeed: 700 + Math.random() * 200,
+        state: 'falling',
+        type: 'allypod',
+        spawned: false,
+        impactTimer: 0
+    };
+    gameState.dropPods.push(pod);
+}
+
 function addXp(amount) {
     gameState.currentXp += amount;
     
@@ -1214,9 +1455,12 @@ function addXp(amount) {
 
 function applyRandomUpgrade() {
     const upgrade = levelUpUpgradesList[Math.floor(Math.random() * levelUpUpgradesList.length)];
-    
-    // Apply upgrade
-    switch(upgrade.stat) {
+    applyUpgrade(upgrade);
+}
+
+function applyUpgrade(upgrade) {
+    if (!upgrade) return;
+    switch (upgrade.stat) {
         case 'maxHealth':
             player.maxHealth += upgrade.value;
             player.health = Math.min(player.health + upgrade.value, player.maxHealth);
@@ -1241,16 +1485,12 @@ function applyRandomUpgrade() {
             player.multishot += upgrade.value;
             break;
         case 'slowZoneRange':
-            // Increase slow zone radius (pixels)
             player.slowZoneRadius += upgrade.value || 75;
             break;
         case 'slowZonePercent':
-            // Increase slow effect percentage (0-1)
             player.slowZonePercent = Math.min(0.95, player.slowZonePercent + (upgrade.value || 0.08));
             break;
     }
-    
-    // Show notification
     showUpgradeNotification(upgrade);
 }
 
@@ -1608,6 +1848,22 @@ function render() {
         ctx.arc(proj.x, proj.y, proj.size, 0, Math.PI * 2);
         ctx.fill();
     });
+
+    // Draw allies
+    gameState.allies.forEach(ally => {
+        // friendly blue color
+        ctx.fillStyle = '#33ccff';
+        ctx.beginPath();
+        ctx.arc(ally.x, ally.y, ally.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        // small shield ring
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(ally.x, ally.y, ally.size + 6, 0, Math.PI * 2);
+        ctx.stroke();
+    });
     
     // Draw enemies
     gameState.enemies.forEach(enemy => {
@@ -1791,26 +2047,59 @@ function render() {
         ctx.fill();
     });
     
-    // Draw pickups (health)
+    // Draw pickups (health and upgrades)
     gameState.pickups.forEach(p => {
         const fade = Math.max(0, 1 - p.timer / p.duration);
-        // heart background
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(255,60,60,${0.9 * fade})`;
-        ctx.arc(p.x - 4, p.y - 2, p.size * 0.6, 0, Math.PI * 2);
-        ctx.arc(p.x + 4, p.y - 2, p.size * 0.6, 0, Math.PI * 2);
-        ctx.moveTo(p.x - 8, p.y + 2);
-        ctx.quadraticCurveTo(p.x, p.y + 14, p.x + 8, p.y + 2);
-        ctx.fill();
-        // white plus for clarity
-        ctx.beginPath();
-        ctx.strokeStyle = `rgba(255,255,255,${fade})`;
-        ctx.lineWidth = 2;
-        ctx.moveTo(p.x, p.y - 6);
-        ctx.lineTo(p.x, p.y + 6);
-        ctx.moveTo(p.x - 6, p.y);
-        ctx.lineTo(p.x + 6, p.y);
-        ctx.stroke();
+        if (!p.type || p.type === 'health') {
+            // heart background
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(255,60,60,${0.9 * fade})`;
+            ctx.arc(p.x - 4, p.y - 2, p.size * 0.6, 0, Math.PI * 2);
+            ctx.arc(p.x + 4, p.y - 2, p.size * 0.6, 0, Math.PI * 2);
+            ctx.moveTo(p.x - 8, p.y + 2);
+            ctx.quadraticCurveTo(p.x, p.y + 14, p.x + 8, p.y + 2);
+            ctx.fill();
+            // white plus for clarity
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(255,255,255,${fade})`;
+            ctx.lineWidth = 2;
+            ctx.moveTo(p.x, p.y - 6);
+            ctx.lineTo(p.x, p.y + 6);
+            ctx.moveTo(p.x - 6, p.y);
+            ctx.lineTo(p.x + 6, p.y);
+            ctx.stroke();
+        } else if (p.type === 'upgrade') {
+            // glowing box for upgrade
+            ctx.save();
+            ctx.globalAlpha = fade;
+            const size = p.size || 12;
+            const grd = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, size * 1.6);
+            grd.addColorStop(0, 'rgba(180,220,255,0.95)');
+            grd.addColorStop(1, 'rgba(80,140,220,0.06)');
+            ctx.fillStyle = grd;
+            ctx.beginPath();
+            ctx.rect(p.x - size, p.y - size, size * 2, size * 2);
+            ctx.fill();
+
+            // inner symbol
+            ctx.strokeStyle = `rgba(255,255,255,${0.9 * fade})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(p.x - size * 0.5, p.y);
+            ctx.lineTo(p.x + size * 0.5, p.y);
+            ctx.moveTo(p.x, p.y - size * 0.5);
+            ctx.lineTo(p.x, p.y + size * 0.5);
+            ctx.stroke();
+            ctx.restore();
+
+            // draw label underneath
+            if (p.label) {
+                ctx.font = '14px sans-serif';
+                ctx.fillStyle = `rgba(255,255,255,${0.95 * fade})`;
+                ctx.textAlign = 'center';
+                ctx.fillText(p.label, p.x, p.y + size + 18);
+            }
+        }
     });
     
     ctx.restore();
@@ -1989,6 +2278,7 @@ function gameLoop() {
         updatePlayer(dt);
         autoShoot();
         triggerEarthquake();
+        updateAllies(dt);
         updateProjectiles(dt);
         updateEnemies(dt);
         updateDropPods(dt);

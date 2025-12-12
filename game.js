@@ -1578,7 +1578,7 @@ function endGame() {
 }
 
 function restartGame() {
-    // Reset player
+    // Reset player core stats
     player.x = 0;
     player.y = 0;
     player.health = 100;
@@ -1591,7 +1591,17 @@ function restartGame() {
     player.piercing = 0;
     player.multishot = 1;
     player.shootCooldown = 1 / 1.0;
-    
+
+    // RESET ALL UPGRADE-RELATED STATS
+    player.slowZoneRadius = 0;
+    player.slowZonePercent = 0;
+    player.earthquakeRange = 0;
+    player.earthquakeCooldown = 5;  // or whatever your default is
+    player.earthquakeStrength = 0;
+
+    gameState.projectileLifetimeBonus = 0;
+    gameState.allies = [];
+
     // Reset game state
     gameState.wave = 1;
     gameState.waveEnemiesKilled = 0;
@@ -1603,8 +1613,7 @@ function restartGame() {
     gameState.level = 1;
     gameState.currentXp = 0;
     gameState.maxXp = 25;
-    gameState.lastSpawnTime = Date.now();
-    
+
     // Reset UI
     gameOver = false;
     gameActive = true;
